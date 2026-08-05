@@ -318,6 +318,117 @@ def cargar_datos_2026(archivo_bytes):
     return pd.DataFrame(registros)
 
 
+@st.cache_data(show_spinner=False)
+def cargar_datos_combinado(archivo_bytes):
+    """
+    Parsea el Excel único que reemplaza a los archivos separados de 2025 y 2026.
+    Es una tabla dinámica de Excel con los años como bloques de columnas
+    (2025 primero, 2026 a continuación), cada uno con sus meses y columnas
+    de 'Total Trimestre X' / 'Total <año>' intercaladas.
+
+    A diferencia de los parsers anteriores (con columnas de mes fijas por
+    índice), este detecta el layout de columnas leyendo el encabezado real
+    del archivo: ubica la fila 'Etiquetas de fila', mira dos filas arriba
+    para saber a qué año pertenece cada bloque de columnas, y solo toma las
+    columnas cuyo encabezado es un nombre de mes (así ignora automáticamente
+    las columnas de subtotal, sin necesidad de hardcodear índices). Esto lo
+    hace robusto a que el archivo crezca mes a mes (p.ej. cuando se sume
+    Agosto) o a que se agregue un año más adelante (2027).
+    """
+    wb = openpyxl.load_workbook(io.BytesIO(archivo_bytes), read_only=True, data_only=True)
+    ws = wb[wb.sheetnames[0]]
+    rows = list(ws.iter_rows(values_only=True))
+
+    # 1) Ubicar la fila de encabezado de meses ('Etiquetas de fila' en col A)
+    header_idx = None
+    for i, row in enumerate(rows[:30]):
+        if row and row[0] == 'Etiquetas de fila':
+            header_idx = i
+            break
+    if header_idx is None:
+        return pd.DataFrame()
+
+    year_row = rows[header_idx - 2]
+    month_row = rows[header_idx]
+
+    # 2) Forward-fill el año a lo largo de las columnas (el Excel solo pone
+    #    el año una vez, al principio de cada bloque)
+    col_year = {}
+    anio_actual = None
+    for idx, val in enumerate(year_row):
+        if val is not None:
+            m = re.match(r'^(20\d{2})$', str(val).strip())
+            if m:
+                anio_actual = int(m.group(1))
+        col_year[idx] = anio_actual
+
+    # 3) Mapear solo las columnas que son un mes real (ignora columnas de Total)
+    col_mes = {}
+    for idx, val in enumerate(month_row):
+        if idx == 0:
+            continue
+        if val in MESES:
+            col_mes[idx] = (val, col_year[idx])
+
+    # 4) Recorrer filas de datos: misma jerarquía cuenta -> negocio -> categoría -> producto
+    registros = []
+    cuenta_actual = None
+    negocio_actual = None
+    categoria_actual = None
+    ANIO_BASE = 2025  # ancla para el mes_num continuo (Ene25=1, Ene26=13, Ene27=25...)
+
+    for row in rows[header_idx + 1:]:
+        col_a = row[0]
+        if col_a is None:
+            continue
+        col_a_str = str(col_a).strip()
+
+        # Detectar cuenta: código puramente numérico de 10 dígitos
+        if re.match(r'^\d{10}$', col_a_str):
+            cuenta_actual = col_a_str.lstrip('0')
+            negocio_actual = None
+            categoria_actual = None
+            continue
+
+        if not cuenta_actual:
+            continue
+
+        if NEGOCIO_PATTERN.match(col_a_str):
+            negocio_actual = col_a_str
+            categoria_actual = None
+            continue
+        if CATEGORIA_PATTERN.match(col_a_str):
+            categoria_actual = col_a_str
+            continue
+
+        # Detectar producto: termina en "(código)"
+        m = re.match(r'^(.*)\s+\((\d+)\)$', col_a_str)
+        if m:
+            producto_limpio = m.group(1).strip()
+            codigo = int(m.group(2))
+
+            for col_idx, (mes, anio) in col_mes.items():
+                if col_idx >= len(row) or anio is None:
+                    continue
+                val = row[col_idx]
+                cantidad = float(val) if val else 0.0
+                mes_num = (anio - ANIO_BASE) * 12 + MESES.index(mes) + 1
+                registros.append({
+                    'cuenta': f'cuenta {cuenta_actual}',
+                    'codigo': codigo,
+                    'producto': col_a_str,
+                    'producto_limpio': producto_limpio,
+                    'negocio': negocio_actual,
+                    'categoria': categoria_actual,
+                    'anio': anio,
+                    'mes': mes,
+                    'mes_num': mes_num,
+                    'cantidad': cantidad
+                })
+
+    return pd.DataFrame(registros)
+
+
 def limpiar_nombre(nombre):
     """Limpia el nombre del producto removiendo el código al final."""
     import re
@@ -446,29 +557,21 @@ def identificar_oportunidades(df_cuenta, df_cadena):
 
 
 # ── Sidebar ────────────────────────────────────────────────────────────────────
-APP_VERSION = "v11 · sin archivo anual (sesgo unidades) · 2026-07-19"
+APP_VERSION = "v12 · archivo único combinado 2025-2026 · 2026-08-05"
 
 with st.sidebar:
     st.markdown("## 🍬 Golotecas")
-    st.markdown("**Análisis de ventas · 2025**")
+    st.markdown("**Análisis de ventas · 2025-2026**")
     st.caption(f"🔖 {APP_VERSION}")
     st.markdown("---")
 
     archivo = st.file_uploader(
-        "Excel ventas mensuales 2025",
+        "Excel ventas mensuales (combinado 2025-2026)",
         type=["xlsx"],
-        help="Archivo estándar de ventas por cuenta, formato tabla dinámica mensual"
+        help="Tabla dinámica única con 2025 y 2026 como bloques de columnas"
     )
     if archivo:
         st.success("✓ Ventas mensuales cargadas")
-
-    archivo_2026 = st.file_uploader(
-        "Excel ventas mensuales 2026 (opcional)",
-        type=["xlsx"],
-        help="Continuación cronológica de 2025, mismo formato de cadena"
-    )
-    if archivo_2026:
-        st.success("✓ Datos 2026 cargados")
 
     st.markdown("---")
     st.markdown("##### Navegación")
@@ -501,31 +604,17 @@ if not archivo:
         """)
     st.stop()
 
-# Cargar datos
+# Cargar datos (archivo único combinado 2025-2026)
 with st.spinner("Procesando datos..."):
-    df_raw = cargar_datos(archivo.read())
+    df_raw = cargar_datos_combinado(archivo.read())
 
 if df_raw.empty:
     st.error("No se pudieron leer datos del archivo. Verificá el formato.")
     st.stop()
 
-# Limpiar nombres de productos
-df_raw['producto_limpio'] = df_raw['producto'].apply(limpiar_nombre)
-
-# Si hay archivo 2026, lo sumamos como continuación cronológica
-if archivo_2026:
-    with st.spinner("Integrando datos 2026..."):
-        df_2026 = cargar_datos_2026(archivo_2026.read())
-    if not df_2026.empty:
-        # Unificar columnas (2025 no tiene producto_limpio calculado inline, ya lo tiene)
-        cols_comunes = ['cuenta', 'codigo', 'producto', 'producto_limpio', 'negocio', 'categoria', 'anio', 'mes', 'mes_num', 'cantidad']
-        df_raw = pd.concat(
-            [df_raw[cols_comunes], df_2026[cols_comunes]],
-            ignore_index=True
-        )
-        st.sidebar.caption(f"📅 Cadena combinada: 2025 (12 meses) + 2026 ({df_2026['mes'].nunique()} meses)")
-    else:
-        st.sidebar.warning("No se pudo leer el archivo 2026, se usa solo 2025.")
+meses_por_anio = df_raw.groupby('anio')['mes'].nunique().to_dict()
+resumen_anios = " + ".join(f"{a} ({m} meses)" for a, m in sorted(meses_por_anio.items()))
+st.sidebar.caption(f"📅 Cadena: {resumen_anios}")
 
 df_raw['trimestre'] = df_raw['mes'].map(TRIMESTRE_DE_MES)
 df_raw['trimestre_label'] = df_raw['anio'].astype(str) + ' T' + df_raw['trimestre'].astype(str)
