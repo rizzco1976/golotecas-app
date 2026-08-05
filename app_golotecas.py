@@ -1180,7 +1180,7 @@ elif vista == "🗓️ Análisis trimestral":
 
     df_trim_sel = df_tri[df_tri['trimestre_label'] == trimestre_sel]
     top_prod_trim = (df_trim_sel.groupby('producto_limpio')['cantidad']
-                     .sum().sort_values(ascending=False).head(15))
+                     .sum().sort_values(ascending=False).head(25))
     total_trim_sel = df_trim_sel['cantidad'].sum()
 
     for prod, val in top_prod_trim.items():
@@ -1190,6 +1190,65 @@ elif vista == "🗓️ Análisis trimestral":
             <span class="producto-nombre">{prod[:45]}</span>
             <span class="producto-valor">{val:,.0f} BU · {pct:.0f}%</span>
         </div>""", unsafe_allow_html=True)
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # ── Evolución de un producto puntual a través de todos los trimestres ──
+    st.markdown('<div class="section-title">Evolución de un producto puntual</div>', unsafe_allow_html=True)
+    st.caption("Elegí un producto y mirá su volumen y su puesto en el ranking en cada trimestre, incluso cuando no entra en el top 25 — así se detectan desvíos puntuales.")
+
+    productos_disponibles = sorted(df_tri['producto_limpio'].unique())
+    producto_foco = st.selectbox(
+        "Producto a analizar",
+        productos_disponibles,
+        key="sel_producto_foco"
+    )
+
+    orden_trim_list = list(orden_trimestres['trimestre_label'])
+    filas_foco = []
+    for tl in orden_trim_list:
+        df_t_all = df_tri[df_tri['trimestre_label'] == tl]
+        ranking_t = df_t_all.groupby('producto_limpio')['cantidad'].sum().sort_values(ascending=False)
+        n_productos_t = len(ranking_t)
+        if producto_foco in ranking_t.index:
+            vol = ranking_t[producto_foco]
+            puesto = ranking_t.index.get_loc(producto_foco) + 1
+        else:
+            vol = 0.0
+            puesto = None
+        filas_foco.append({'trimestre': tl, 'volumen': vol, 'puesto': puesto, 'n_productos': n_productos_t})
+
+    df_foco = pd.DataFrame(filas_foco)
+
+    st.bar_chart(df_foco.set_index('trimestre')['volumen'], color="#818cf8", height=220)
+
+    for i, row_f in df_foco.iterrows():
+        if row_f['puesto'] is None:
+            puesto_txt = "sin ventas este trimestre"
+            color_puesto = "#f87171"
+        elif row_f['puesto'] <= 25:
+            puesto_txt = f"puesto #{row_f['puesto']} de {row_f['n_productos']}"
+            color_puesto = "#34d399"
+        else:
+            puesto_txt = f"puesto #{row_f['puesto']} de {row_f['n_productos']} · fuera del top 25"
+            color_puesto = "#fbbf24"
+
+        # Marcar caída fuerte vs el trimestre inmediatamente anterior (posible desvío puntual)
+        alerta_txt = ''
+        if i > 0:
+            vol_prev = df_foco.iloc[i - 1]['volumen']
+            if vol_prev > 0:
+                var_pct_f = (row_f['volumen'] - vol_prev) / vol_prev * 100
+                if var_pct_f <= -30:
+                    alerta_txt = f' <span class="tag-rojo">⚠ {var_pct_f:.0f}% vs trim. anterior</span>'
+
+        st.markdown(f"""
+        <div class="producto-row">
+            <span class="producto-nombre">{row_f['trimestre']}</span>
+            <span class="producto-valor" style="color:{color_puesto};">{row_f['volumen']:,.0f} BU · {puesto_txt}{alerta_txt}</span>
+        </div>""", unsafe_allow_html=True)
+
+    st.caption("💡 El ⚠ marca una caída de 30% o más contra el trimestre inmediatamente anterior — no explica la causa, es una señal para revisar con tu criterio si hubo algo puntual (quiebre de stock, cambio de precio, estacionalidad, etc.).")
 
     # ── Comparar el mix de productos de este trimestre vs mismo trimestre año anterior ──
     trimestre_num_sel = int(trimestre_sel.split(' T')[1])
