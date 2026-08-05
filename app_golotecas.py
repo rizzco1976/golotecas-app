@@ -1250,6 +1250,36 @@ elif vista == "🗓️ Análisis trimestral":
 
     st.caption("💡 El ⚠ marca una caída de 30% o más contra el trimestre inmediatamente anterior — no explica la causa, es una señal para revisar con tu criterio si hubo algo puntual (quiebre de stock, cambio de precio, estacionalidad, etc.).")
 
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # ── Desglose mensual: mismo producto elegido, abierto mes a mes dentro del trimestre elegido arriba ──
+    st.markdown(f'<div class="section-title">Desglose mensual · {producto_foco[:40]} en {trimestre_sel}</div>', unsafe_allow_html=True)
+
+    df_prod_mes = df_tri[
+        (df_tri['trimestre_label'] == trimestre_sel) &
+        (df_tri['producto_limpio'] == producto_foco)
+    ]
+
+    if df_prod_mes.empty:
+        st.caption(f"Sin datos de \"{producto_foco}\" en {trimestre_sel}.")
+    else:
+        por_mes_prod = (df_prod_mes.groupby('mes_num')
+                        .agg(mes=('mes', 'first'), cantidad=('cantidad', 'sum'))
+                        .sort_index())
+        codigo_prod = df_prod_mes['codigo'].iloc[0]
+        total_prod_trim = por_mes_prod['cantidad'].sum()
+
+        st.bar_chart(por_mes_prod.set_index('mes')['cantidad'], color="#34d399", height=200)
+
+        for _, row_m in por_mes_prod.iterrows():
+            pct_m = row_m['cantidad'] / total_prod_trim * 100 if total_prod_trim else 0
+            pack_html = badge_pack(codigo_prod, row_m['cantidad'])
+            st.markdown(f"""
+            <div class="producto-row">
+                <span class="producto-nombre">{row_m['mes']}</span>
+                <span class="producto-valor">{row_m['cantidad']:,.2f} BU · {pct_m:.0f}% del trimestre{pack_html}</span>
+            </div>""", unsafe_allow_html=True)
+
     # ── Comparar el mix de productos de este trimestre vs mismo trimestre año anterior ──
     trimestre_num_sel = int(trimestre_sel.split(' T')[1])
     anio_num_sel = int(trimestre_sel.split(' T')[0])
