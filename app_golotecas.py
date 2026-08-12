@@ -1126,6 +1126,62 @@ elif vista == "🗓️ Análisis trimestral":
 
     st.markdown("<br>", unsafe_allow_html=True)
 
+    # ── Volumen mensual: para descartar meses puntuales de grandes eventos ──
+    st.markdown('<div class="section-title">Volumen mensual · detectar meses con eventos puntuales</div>', unsafe_allow_html=True)
+    st.caption("Cada mes se compara contra el promedio de los otros 2 meses de su mismo trimestre — así se distingue una compra grande y puntual de una tendencia real del trimestre.")
+
+    orden_meses = (df_tri[['anio', 'mes_num', 'mes', 'trimestre_label']]
+                  .drop_duplicates()
+                  .sort_values('mes_num'))
+    por_mes_total = df_tri.groupby('mes_num')['cantidad'].sum()
+
+    serie_mensual = por_mes_total.reindex(orden_meses['mes_num'])
+    serie_mensual.index = orden_meses.apply(lambda r: f"{r['mes'][:3]} {r['anio']}", axis=1).values
+
+    st.bar_chart(serie_mensual, color="#a78bfa", height=240)
+
+    for _, fila_mes in orden_meses.iterrows():
+        mn = fila_mes['mes_num']
+        tl = fila_mes['trimestre_label']
+        vol_mes = por_mes_total.get(mn, 0.0)
+
+        # Comparar contra el promedio de los otros meses del mismo trimestre
+        meses_mismo_trim = orden_meses[orden_meses['trimestre_label'] == tl]['mes_num'].tolist()
+        otros_meses = [m for m in meses_mismo_trim if m != mn]
+        vols_otros = [por_mes_total.get(m, 0.0) for m in otros_meses]
+        prom_otros = sum(vols_otros) / len(vols_otros) if vols_otros else None
+
+        alerta = ''
+        es_pico = False
+        if prom_otros and prom_otros > 0:
+            desvio_pct = (vol_mes - prom_otros) / prom_otros * 100
+            if desvio_pct >= 50:
+                es_pico = True
+                alerta = f' <span class="tag-amarillo">⚠ {desvio_pct:.0f}% arriba del promedio del trimestre</span>'
+
+        etiqueta = f"{fila_mes['mes']} {fila_mes['anio']}"
+        st.markdown(f"""
+        <div class="producto-row">
+            <span class="producto-nombre">{etiqueta} <span style="color:#6b7280; font-size:0.7rem;">({tl})</span></span>
+            <span class="producto-valor">{vol_mes:,.0f} BU{alerta}</span>
+        </div>""", unsafe_allow_html=True)
+
+        if es_pico:
+            if filtro_local_tri == "Cadena completa":
+                top_contrib = (df_tri[df_tri['mes_num'] == mn]
+                              .groupby('cuenta')['cantidad'].sum()
+                              .sort_values(ascending=False).head(3))
+                detalle_txt = " · ".join(f"{n.replace('cuenta ', 'Local ')} ({v:,.0f} BU)" for n, v in top_contrib.items())
+                st.caption(f"↳ Locales que más aportaron ese mes: {detalle_txt}")
+            else:
+                top_contrib = (df_tri[df_tri['mes_num'] == mn]
+                              .groupby('producto_limpio')['cantidad'].sum()
+                              .sort_values(ascending=False).head(3))
+                detalle_txt = " · ".join(f"{n[:30]} ({v:,.0f} BU)" for n, v in top_contrib.items())
+                st.caption(f"↳ Productos que más aportaron ese mes: {detalle_txt}")
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
     # ── Comparativa año contra año, mismo trimestre ──
     st.markdown('<div class="section-title">Comparativa · Mismo trimestre, año contra año</div>', unsafe_allow_html=True)
 
