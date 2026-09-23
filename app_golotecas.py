@@ -8,8 +8,8 @@ from pathlib import Path
 
 # ── Configuración ──────────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="Golotecas · Análisis de Ventas",
-    page_icon="🍬",
+    page_title="Carteras · Análisis de Ventas",
+    page_icon="🗂️",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -159,13 +159,6 @@ footer {visibility: hidden;}
 MESES = ['Enero','Febrero','Marzo','Abril','Mayo','Junio',
          'Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre']
 
-MESES_COL = {
-    'Enero': 2, 'Febrero': 3, 'Marzo': 4,
-    'Abril': 6, 'Mayo': 7, 'Junio': 8,
-    'Julio': 10, 'Agosto': 11, 'Septiembre': 12,
-    'Octubre': 14, 'Noviembre': 15, 'Diciembre': 16
-}
-
 TRIMESTRE_DE_MES = {
     'Enero': 1, 'Febrero': 1, 'Marzo': 1,
     'Abril': 2, 'Mayo': 2, 'Junio': 2,
@@ -174,208 +167,78 @@ TRIMESTRE_DE_MES = {
 }
 
 # ── Funciones de carga y parseo ────────────────────────────────────────────────
+# Formato único (2025+2026 en una sola hoja, una hoja por cartera) usado por
+# Info_Franco.xlsx: tabla dinámica de Excel con fila de años, fila de meses,
+# y debajo cuenta (10 dígitos) -> negocio (2 dígitos) -> categoría (4 dígitos) -> producto.
 NEGOCIO_PATTERN = re.compile(r'^\d{2} - ')
 CATEGORIA_PATTERN = re.compile(r'^\d{4} - ')
+CUENTA_PATTERN = re.compile(r'^\d{10}$')
+PRODUCTO_PATTERN = re.compile(r'^(.*)\s+\((\d+)\)$')
+NOTA_PARCIAL_PATTERN = re.compile(r'(\d{4}):\s*Info hasta\s*(\d{1,2})/(\d{1,2})')
 
 
-@st.cache_data(show_spinner=False)
-def cargar_datos(archivo_bytes):
-    wb = openpyxl.load_workbook(io.BytesIO(archivo_bytes), read_only=True, data_only=True)
-    ws = wb.active
-    rows = list(ws.iter_rows(values_only=True))
-
-    registros = []
-    cuenta_actual = None
-    negocio_actual = None
-    categoria_actual = None
-
-    for row in rows:
-        col_b = str(row[1]).strip() if row[1] is not None else ''
-        col_a = row[0]
-
-        # Detectar bloque de cuenta
-        if col_b.startswith('cuenta'):
-            cuenta_actual = col_b
-            negocio_actual = None
-            categoria_actual = None
-            continue
-
-        if not cuenta_actual:
-            continue
-
-        # Detectar negocio (2 dígitos) o categoría (4 dígitos)
-        if NEGOCIO_PATTERN.match(col_b):
-            negocio_actual = col_b
-            categoria_actual = None
-            continue
-        if CATEGORIA_PATTERN.match(col_b):
-            categoria_actual = col_b
-            continue
-
-        # Filas de producto (col_a es código numérico)
-        if col_a and str(col_a).strip() not in ['', 'None', 'Codigo', 'codigo', 'cuenta', '#N/A']:
-            try:
-                codigo = int(float(str(col_a)))
-                producto = col_b
-
-                for mes, col_idx in MESES_COL.items():
-                    val = row[col_idx] if col_idx < len(row) else None
-                    cantidad = float(val) if val else 0.0
-                    registros.append({
-                        'cuenta': cuenta_actual,
-                        'codigo': codigo,
-                        'producto': producto,
-                        'negocio': negocio_actual,
-                        'categoria': categoria_actual,
-                        'anio': 2025,
-                        'mes': mes,
-                        'mes_num': MESES.index(mes) + 1,  # 1-12
-                        'cantidad': cantidad
-                    })
-            except (ValueError, TypeError):
-                pass
-
-    df = pd.DataFrame(registros)
-    return df
-
-
-@st.cache_data(show_spinner=False)
-def cargar_datos_2026(archivo_bytes):
+def leer_filas(ws, max_vacias=300):
     """
-    Parsea el Excel jerárquico de 2026 (cuenta -> categoría -> subcategoría -> producto).
-    Estructura distinta a 2025: código y nombre van juntos en una sola columna,
-    y la cuenta aparece como código numérico de 10 dígitos (no como texto 'cuenta XXXX').
+    Lee las filas de una hoja cortando la 'cola' de filas vacías que Excel arrastra
+    en las tablas dinámicas: este archivo declara ~261.000 filas cuando los datos
+    reales terminan cerca de la 4.500. Sin este corte cada carga tarda ~40 s.
     """
-    MESES_COL_2026 = {
-        'Enero': 1, 'Febrero': 2, 'Marzo': 3,
-        'Abril': 5, 'Mayo': 6, 'Junio': 7,
-    }
-    # mes_num continuo: 2026 sigue después de los 12 meses de 2025 -> Enero 2026 = 13
-    MES_NUM_2026 = {
-        'Enero': 13, 'Febrero': 14, 'Marzo': 15,
-        'Abril': 16, 'Mayo': 17, 'Junio': 18,
-    }
-
-    wb = openpyxl.load_workbook(io.BytesIO(archivo_bytes), read_only=True, data_only=True)
-    ws = wb.active
-    rows = list(ws.iter_rows(values_only=True))
-
-    registros = []
-    cuenta_actual = None
-    negocio_actual = None
-    categoria_actual = None
-
-    for row in rows:
-        col_a = row[0]
-        if col_a is None:
+    filas = []
+    vacias = 0
+    for row in ws.iter_rows(values_only=True):
+        if all(c is None for c in row):
+            vacias += 1
+            if vacias >= max_vacias and filas:
+                break
+            filas.append(row)
             continue
-        col_a_str = str(col_a).strip()
-
-        # Detectar cuenta: código puramente numérico de 10 dígitos
-        if re.match(r'^\d{10}$', col_a_str):
-            cuenta_actual = col_a_str.lstrip('0')
-            negocio_actual = None
-            categoria_actual = None
-            continue
-
-        if not cuenta_actual:
-            continue
-
-        # Detectar negocio (2 dígitos) o categoría (4 dígitos)
-        if NEGOCIO_PATTERN.match(col_a_str):
-            negocio_actual = col_a_str
-            categoria_actual = None
-            continue
-        if CATEGORIA_PATTERN.match(col_a_str):
-            categoria_actual = col_a_str
-            continue
-
-        # Detectar producto: termina en "(código)"
-        m = re.match(r'^(.*)\s+\((\d+)\)$', col_a_str)
-        if m:
-            producto_limpio = m.group(1).strip()
-            codigo = int(m.group(2))
-
-            # Solo procesar columnas que existan en la fila (evita error si el mes aún no tiene datos)
-            for mes, col_idx in MESES_COL_2026.items():
-                if col_idx >= len(row):
-                    continue
-                val = row[col_idx]
-                cantidad = float(val) if val else 0.0
-                registros.append({
-                    'cuenta': f'cuenta {cuenta_actual}',
-                    'codigo': codigo,
-                    'producto': col_a_str,
-                    'producto_limpio': producto_limpio,
-                    'negocio': negocio_actual,
-                    'categoria': categoria_actual,
-                    'anio': 2026,
-                    'mes': mes,
-                    'mes_num': MES_NUM_2026[mes],
-                    'cantidad': cantidad
-                })
-
-    return pd.DataFrame(registros)
+        vacias = 0
+        filas.append(row)
+    return filas
 
 
-@st.cache_data(show_spinner=False)
-def cargar_datos_combinado(archivo_bytes):
+def encontrar_columnas_mes(rows):
     """
-    Parsea el Excel único que reemplaza a los archivos separados de 2025 y 2026.
-    Es una tabla dinámica de Excel con los años como bloques de columnas
-    (2025 primero, 2026 a continuación), cada uno con sus meses y columnas
-    de 'Total Trimestre X' / 'Total <año>' intercaladas.
-
-    A diferencia de los parsers anteriores (con columnas de mes fijas por
-    índice), este detecta el layout de columnas leyendo el encabezado real
-    del archivo: ubica la fila 'Etiquetas de fila', mira dos filas arriba
-    para saber a qué año pertenece cada bloque de columnas, y solo toma las
-    columnas cuyo encabezado es un nombre de mes (así ignora automáticamente
-    las columnas de subtotal, sin necesidad de hardcodear índices). Esto lo
-    hace robusto a que el archivo crezca mes a mes (p.ej. cuando se sume
-    Agosto) o a que se agregue un año más adelante (2027).
+    Ubica automáticamente la fila de encabezado (la que arranca con 'Etiquetas
+    de fila') sin importar el offset vertical -que varía entre hojas del mismo
+    archivo (ej. Medina trae una fila extra 'Cliente')-, lee la fila de año
+    2 filas arriba y arma el mapa columna -> (año, mes).
     """
-    wb = openpyxl.load_workbook(io.BytesIO(archivo_bytes), read_only=True, data_only=True)
-    ws = wb[wb.sheetnames[0]]
-    rows = list(ws.iter_rows(values_only=True))
-
-    # 1) Ubicar la fila de encabezado de meses ('Etiquetas de fila' en col A)
     header_idx = None
-    for i, row in enumerate(rows[:30]):
+    for i, row in enumerate(rows):
         if row and row[0] == 'Etiquetas de fila':
             header_idx = i
             break
     if header_idx is None:
-        return pd.DataFrame()
+        return None, {}
 
-    year_row = rows[header_idx - 2]
-    month_row = rows[header_idx]
+    fila_meses = rows[header_idx]
+    fila_anio = rows[header_idx - 2] if header_idx >= 2 else []
 
-    # 2) Forward-fill el año a lo largo de las columnas (el Excel solo pone
-    #    el año una vez, al principio de cada bloque)
-    col_year = {}
+    # Forward-fill del año a lo largo de las columnas (Excel sólo lo escribe 1 vez por bloque)
+    anio_por_col = {}
     anio_actual = None
-    for idx, val in enumerate(year_row):
-        if val is not None:
-            m = re.match(r'^(20\d{2})$', str(val).strip())
-            if m:
-                anio_actual = int(m.group(1))
-        col_year[idx] = anio_actual
+    for i in range(len(fila_meses)):
+        val = fila_anio[i] if i < len(fila_anio) else None
+        if val is not None and re.match(r'^(19|20)\d{2}$', str(val).strip()):
+            anio_actual = int(str(val).strip())
+        anio_por_col[i] = anio_actual
 
-    # 3) Mapear solo las columnas que son un mes real (ignora columnas de Total)
     col_mes = {}
-    for idx, val in enumerate(month_row):
-        if idx == 0:
-            continue
+    for i, val in enumerate(fila_meses):
         if val in MESES:
-            col_mes[idx] = (val, col_year[idx])
+            anio = anio_por_col.get(i)
+            if anio:
+                col_mes[i] = (anio, val)
+    return header_idx, col_mes
 
-    # 4) Recorrer filas de datos: misma jerarquía cuenta -> negocio -> categoría -> producto
+
+def parsear_cartera_sheet(rows, cartera_nombre, col_mes, header_idx):
+    """Parsea una hoja (una cartera) ya localizado su encabezado de meses."""
     registros = []
     cuenta_actual = None
     negocio_actual = None
     categoria_actual = None
-    ANIO_BASE = 2025  # ancla para el mes_num continuo (Ene25=1, Ene26=13, Ene27=25...)
 
     for row in rows[header_idx + 1:]:
         col_a = row[0]
@@ -384,8 +247,8 @@ def cargar_datos_combinado(archivo_bytes):
         col_a_str = str(col_a).strip()
 
         # Detectar cuenta: código puramente numérico de 10 dígitos
-        if re.match(r'^\d{10}$', col_a_str):
-            cuenta_actual = col_a_str.lstrip('0')
+        if CUENTA_PATTERN.match(col_a_str):
+            cuenta_actual = col_a_str.lstrip('0') or '0'
             negocio_actual = None
             categoria_actual = None
             continue
@@ -393,6 +256,7 @@ def cargar_datos_combinado(archivo_bytes):
         if not cuenta_actual:
             continue
 
+        # Detectar negocio (2 dígitos) o categoría (4 dígitos)
         if NEGOCIO_PATTERN.match(col_a_str):
             negocio_actual = col_a_str
             categoria_actual = None
@@ -402,18 +266,19 @@ def cargar_datos_combinado(archivo_bytes):
             continue
 
         # Detectar producto: termina en "(código)"
-        m = re.match(r'^(.*)\s+\((\d+)\)$', col_a_str)
+        m = PRODUCTO_PATTERN.match(col_a_str)
         if m:
             producto_limpio = m.group(1).strip()
             codigo = int(m.group(2))
-
-            for col_idx, (mes, anio) in col_mes.items():
-                if col_idx >= len(row) or anio is None:
+            for col_idx, (anio, mes) in col_mes.items():
+                if col_idx >= len(row):
                     continue
                 val = row[col_idx]
                 cantidad = float(val) if val else 0.0
-                mes_num = (anio - ANIO_BASE) * 12 + MESES.index(mes) + 1
+                if cantidad == 0.0:
+                    continue
                 registros.append({
+                    'cartera': cartera_nombre,
                     'cuenta': f'cuenta {cuenta_actual}',
                     'codigo': codigo,
                     'producto': col_a_str,
@@ -422,11 +287,72 @@ def cargar_datos_combinado(archivo_bytes):
                     'categoria': categoria_actual,
                     'anio': anio,
                     'mes': mes,
-                    'mes_num': mes_num,
                     'cantidad': cantidad
                 })
-
     return pd.DataFrame(registros)
+
+
+def detectar_mes_parcial(rows):
+    """
+    Busca en una hoja resumen ('Por negocio') una nota tipo '2026: Info hasta
+    13/09' y devuelve (año, nombre_mes) del mes incompleto, o None si no hay.
+    """
+    for row in rows:
+        for cell in row:
+            if isinstance(cell, str):
+                m = NOTA_PARCIAL_PATTERN.search(cell)
+                if m:
+                    anio = int(m.group(1))
+                    mes_idx = int(m.group(3)) - 1  # formato dd/mm -> el mes es el 2do número
+                    if 0 <= mes_idx < 12:
+                        return anio, MESES[mes_idx]
+    return None
+
+
+@st.cache_data(show_spinner=False)
+def cargar_info_franco(archivo_bytes):
+    """
+    Parsea el Excel consolidado multi-cartera (una hoja por cartera, cada una
+    seguida opcionalmente de su hoja resumen 'Por negocio' / 'Por negocio (n)').
+    Devuelve (df_todas_las_carteras, notas_parciales), donde notas_parciales es
+    {cartera: mes_num_incompleto} para excluir ese mes de las proyecciones.
+    """
+    wb = openpyxl.load_workbook(io.BytesIO(archivo_bytes), read_only=True, data_only=True)
+    nombres = wb.sheetnames
+
+    dfs = []
+    notas_parciales = {}
+
+    for i, nombre in enumerate(nombres):
+        if nombre.strip().lower().startswith('por negocio'):
+            continue  # se procesa como complemento de la cartera anterior
+
+        ws = wb[nombre]
+        rows = leer_filas(ws)
+        header_idx, col_mes = encontrar_columnas_mes(rows)
+        if header_idx is None or not col_mes:
+            continue
+
+        cartera_nombre = nombre.strip()
+        df_cartera = parsear_cartera_sheet(rows, cartera_nombre, col_mes, header_idx)
+        if not df_cartera.empty:
+            dfs.append(df_cartera)
+
+        # La hoja resumen de esta cartera (si existe) trae la nota de mes parcial
+        if i + 1 < len(nombres) and nombres[i + 1].strip().lower().startswith('por negocio'):
+            rows_neg = leer_filas(wb[nombres[i + 1]])
+            nota = detectar_mes_parcial(rows_neg)
+            if nota:
+                anio_p, mes_p = nota
+                notas_parciales[cartera_nombre] = anio_p * 12 + MESES.index(mes_p)
+
+    if not dfs:
+        return pd.DataFrame(), {}
+
+    df = pd.concat(dfs, ignore_index=True)
+    # mes_num continuo y comparable entre años: 2025*12+idx < 2026*12+idx, cronológico siempre
+    df['mes_num'] = df['anio'] * 12 + df['mes'].apply(lambda m: MESES.index(m))
+    return df, notas_parciales
 
 
 def limpiar_nombre(nombre):
@@ -492,11 +418,16 @@ def badge_pack(codigo, cantidad_bultos):
 
 
 def etiqueta_mes(mes_num):
-    """Convierte mes_num continuo (1-12=2025, 13+=2026) a etiqueta corta tipo 'Ene25'."""
-    if mes_num <= 12:
-        return f"{MESES[mes_num - 1][:3]}25"
-    else:
-        return f"{MESES[mes_num - 13][:3]}26"
+    """Convierte mes_num continuo (año*12+idx_mes) a etiqueta corta tipo 'Ene25'."""
+    anio = mes_num // 12
+    mes_idx = mes_num % 12
+    return f"{MESES[mes_idx][:3]}{anio % 100:02d}"
+
+
+def etiqueta_mes_marcada(mes_num, mes_num_parcial):
+    """Igual que etiqueta_mes, pero agrega '*' si es el mes en curso (parcial)."""
+    base = etiqueta_mes(mes_num)
+    return f"{base}*" if mes_num_parcial is not None and mes_num == mes_num_parcial else base
 
 
 def proyectar_proximo_pedido(serie_mensual):
@@ -557,72 +488,110 @@ def identificar_oportunidades(df_cuenta, df_cadena):
 
 
 # ── Sidebar ────────────────────────────────────────────────────────────────────
-APP_VERSION = "v12 · archivo único combinado 2025-2026 · 2026-08-05"
+APP_VERSION = "v12 · multi-cartera (Golotecas / Open 25 / Medina) · 2026-09-23"
+
+# Cuentas de ruido a excluir, por cartera (volumen insignificante, no son locales reales)
+RUIDO_POR_CARTERA = {
+    'Golotecas': ['cuenta 3080021'],
+}
 
 with st.sidebar:
-    st.markdown("## 🍬 Golotecas")
-    st.markdown("**Análisis de ventas · 2025-2026**")
+    st.markdown("## 🗂️ Carteras · Ventas")
     st.caption(f"🔖 {APP_VERSION}")
     st.markdown("---")
 
     archivo = st.file_uploader(
-        "Excel ventas mensuales (combinado 2025-2026)",
+        "Excel consolidado de carteras",
         type=["xlsx"],
-        help="Tabla dinámica única con 2025 y 2026 como bloques de columnas"
+        help="Archivo con una hoja por cartera (ej. Golotecas, Open 25, Medina), formato tabla dinámica mensual con 2025 y 2026"
     )
+
+    cartera_sel = None
+    vista = None
+    df_todas = pd.DataFrame()
+    notas_parciales = {}
+
     if archivo:
-        st.success("✓ Ventas mensuales cargadas")
+        with st.spinner("Procesando datos..."):
+            df_todas, notas_parciales = cargar_info_franco(archivo.read())
 
-    st.markdown("---")
-    st.markdown("##### Navegación")
+        if df_todas.empty:
+            st.error("No se pudieron leer datos del archivo. Verificá el formato.")
+        else:
+            st.success("✓ Archivo cargado")
+            CARTERAS = sorted(df_todas['cartera'].unique())
 
-    opciones_vista = ["📊 Resumen cadena", "🏪 Análisis por local", "🎯 Próximo pedido", "📈 Comparativa locales", "🗂️ Por negocio", "🗓️ Análisis trimestral"]
+            st.markdown("---")
+            cartera_sel = st.selectbox("Cartera", CARTERAS)
+            _df_sel = df_todas[df_todas['cartera'] == cartera_sel]
+            # Mismo criterio que el resto de la app: sin las cuentas de ruido
+            _df_sel = _df_sel[~_df_sel['cuenta'].isin(RUIDO_POR_CARTERA.get(cartera_sel, []))]
+            _anios = " + ".join(str(a) for a in sorted(_df_sel['anio'].unique()))
+            st.caption(f"📅 Datos {_anios} · {_df_sel['cuenta'].nunique()} cuentas en esta cartera")
 
-    vista = st.radio(
-        "Vista",
-        opciones_vista,
-        label_visibility="collapsed"
-    )
+            st.markdown("---")
+            st.markdown("##### Navegación")
+
+            opciones_vista = ["📊 Resumen cadena", "🏪 Análisis por local", "🎯 Próximo pedido", "📈 Comparativa locales", "🗂️ Por negocio", "🗓️ Análisis trimestral"]
+
+            vista = st.radio(
+                "Vista",
+                opciones_vista,
+                label_visibility="collapsed"
+            )
 
 # ── Main content ───────────────────────────────────────────────────────────────
 if not archivo:
-    st.markdown("# 🍬 Golotecas · Análisis de Ventas")
+    st.markdown("# 🗂️ Carteras · Análisis de Ventas")
     st.markdown("---")
     col1, col2 = st.columns([2,1])
     with col1:
         st.markdown("""
         ### Cargá el archivo Excel para comenzar
 
-        Esta herramienta analiza las ventas de la cadena de 8 locales y te da:
+        Esta herramienta analiza las ventas de tus carteras de clientes (cada
+        hoja del Excel es una cartera, ej. Golotecas, Open 25, Medina) y te da,
+        para la cartera que elijas en el panel izquierdo:
 
         - **Proyección del próximo pedido** por local, con intervalo de confianza
-        - **Productos a empujar** en cada local según su comportamiento vs. la cadena
+        - **Productos a empujar** en cada local según su comportamiento vs. el resto de la cartera
         - **Comparativa entre locales** para detectar oportunidades
         - **Tendencias mensuales y trimestrales** por categoría y producto
 
-        Usá el panel izquierdo para subir los archivos Excel.
+        Usá el panel izquierdo para subir el Excel consolidado.
         """)
     st.stop()
 
-# Cargar datos (archivo único combinado 2025-2026)
-with st.spinner("Procesando datos..."):
-    df_raw = cargar_datos_combinado(archivo.read())
+if df_todas.empty:
+    st.stop()  # el error ya se mostró en el sidebar
 
-if df_raw.empty:
-    st.error("No se pudieron leer datos del archivo. Verificá el formato.")
-    st.stop()
+# Filtrar a la cartera seleccionada. A partir de acá, df_raw y CUENTAS quedan
+# con los mismos nombres/estructura que antes, así que el resto de las vistas
+# funciona sin cambios sobre esta porción ya filtrada.
+df_raw = df_todas[df_todas['cartera'] == cartera_sel].copy()
 
-meses_por_anio = df_raw.groupby('anio')['mes'].nunique().to_dict()
-resumen_anios = " + ".join(f"{a} ({m} meses)" for a, m in sorted(meses_por_anio.items()))
-st.sidebar.caption(f"📅 Cadena: {resumen_anios}")
+cuentas_ruido = RUIDO_POR_CARTERA.get(cartera_sel, [])
+if cuentas_ruido:
+    df_raw = df_raw[~df_raw['cuenta'].isin(cuentas_ruido)]
 
 df_raw['trimestre'] = df_raw['mes'].map(TRIMESTRE_DE_MES)
 df_raw['trimestre_label'] = df_raw['anio'].astype(str) + ' T' + df_raw['trimestre'].astype(str)
 
-# Excluir cuenta marginal/ruido (volumen insignificante, no es un local real de la cadena)
-df_raw = df_raw[df_raw['cuenta'] != 'cuenta 3080021']
-
 df_raw['formato'] = df_raw['producto_limpio'].apply(clasificar_formato)
+
+# Mes en curso (incompleto) para esta cartera, si el archivo trae la nota -
+# se excluye de las proyecciones de próximo pedido y se marca con "*" en los gráficos.
+MES_NUM_PARCIAL = notas_parciales.get(cartera_sel)
+
+# El trimestre que contiene ese mes queda incompleto: no es comparable contra el
+# mismo trimestre del año anterior sin igualar los meses.
+if MES_NUM_PARCIAL is not None:
+    ANIO_PARCIAL = MES_NUM_PARCIAL // 12
+    MES_PARCIAL = MESES[MES_NUM_PARCIAL % 12]
+    TRIMESTRE_PARCIAL = TRIMESTRE_DE_MES[MES_PARCIAL]
+    TRIMESTRE_PARCIAL_LABEL = f"{ANIO_PARCIAL} T{TRIMESTRE_PARCIAL}"
+else:
+    ANIO_PARCIAL = MES_PARCIAL = TRIMESTRE_PARCIAL = TRIMESTRE_PARCIAL_LABEL = None
 
 CUENTAS = sorted(df_raw['cuenta'].unique())
 
@@ -630,7 +599,7 @@ CUENTAS = sorted(df_raw['cuenta'].unique())
 # VISTA 1: RESUMEN CADENA
 # ══════════════════════════════════════════════════════════════════════════════
 if vista == "📊 Resumen cadena":
-    st.markdown("# Resumen · Cadena completa")
+    st.markdown(f"# Resumen · {cartera_sel}")
     st.markdown("---")
 
     # Métricas globales
@@ -648,16 +617,16 @@ if vista == "📊 Resumen cadena":
     with col1:
         st.markdown(f"""
         <div class="metric-card">
-            <div class="metric-label">Total vendido 2025</div>
+            <div class="metric-label">Total vendido</div>
             <div class="metric-value">{total_cadena:,.0f}</div>
-            <div class="metric-delta delta-neu">BU (unidades base)</div>
+            <div class="metric-delta delta-neu">BU · {'-'.join(str(a) for a in sorted(df_raw['anio'].unique()))}</div>
         </div>""", unsafe_allow_html=True)
     with col2:
         st.markdown(f"""
         <div class="metric-card">
             <div class="metric-label">Locales activos</div>
             <div class="metric-value">{total_locales}</div>
-            <div class="metric-delta delta-neu">cuentas en la cadena</div>
+            <div class="metric-delta delta-neu">cuentas en {cartera_sel}</div>
         </div>""", unsafe_allow_html=True)
     with col3:
         st.markdown(f"""
@@ -681,10 +650,12 @@ if vista == "📊 Resumen cadena":
     with col_left:
         st.markdown('<div class="section-title">Evolución mensual · Cadena completa</div>', unsafe_allow_html=True)
         evol = df_raw.groupby('mes_num')['cantidad'].sum().reset_index()
-        evol['mes'] = evol['mes_num'].apply(etiqueta_mes)
+        evol['mes'] = evol['mes_num'].apply(lambda m: etiqueta_mes_marcada(m, MES_NUM_PARCIAL))
         # Orden cronológico forzado (Streamlit/Altair ordena texto alfabéticamente por defecto)
         evol['mes'] = pd.Categorical(evol['mes'], categories=evol['mes'].tolist(), ordered=True)
         st.bar_chart(evol.set_index('mes')['cantidad'], color="#6366f1", height=240)
+        if MES_NUM_PARCIAL is not None and MES_NUM_PARCIAL in evol['mes_num'].values:
+            st.caption("* mes en curso, con datos parciales")
 
     with col_right:
         st.markdown('<div class="section-title">Volumen por local</div>', unsafe_allow_html=True)
@@ -740,7 +711,7 @@ elif vista == "🏪 Análisis por local":
         clase = "delta-pos" if vs_promedio >= 0 else "delta-neg"
         st.markdown(f"""
         <div class="metric-card">
-            <div class="metric-label">Total local 2025</div>
+            <div class="metric-label">Total local</div>
             <div class="metric-value">{total_local:,.0f}</div>
             <div class="metric-delta {clase}">{signo}{vs_promedio:.1f}% vs promedio cadena</div>
         </div>""", unsafe_allow_html=True)
@@ -767,7 +738,7 @@ elif vista == "🏪 Análisis por local":
     with col_left:
         st.markdown(f'<div class="section-title">Evolución mensual · {cuenta_sel.replace("cuenta ", "Local ")}</div>', unsafe_allow_html=True)
         evol_local = df_local.groupby('mes_num')['cantidad'].sum().reset_index()
-        evol_local['mes'] = evol_local['mes_num'].apply(etiqueta_mes)
+        evol_local['mes'] = evol_local['mes_num'].apply(lambda m: etiqueta_mes_marcada(m, MES_NUM_PARCIAL))
         evol_local['mes'] = pd.Categorical(evol_local['mes'], categories=evol_local['mes'].tolist(), ordered=True)
         st.bar_chart(evol_local.set_index('mes')['cantidad'], color="#6366f1", height=220)
 
@@ -826,7 +797,8 @@ elif vista == "🎯 Próximo pedido":
     df_local = df_raw[df_raw['cuenta'] == cuenta_sel]
 
     # Proyección total del local
-    meses_disp = sorted(df_raw['mes_num'].unique())
+    # Se excluye el mes en curso (parcial) para no subestimar la proyección con un mes incompleto
+    meses_disp = [m for m in sorted(df_raw['mes_num'].unique()) if m != MES_NUM_PARCIAL]
     serie_total = [df_local[df_local['mes_num'] == m]['cantidad'].sum() for m in meses_disp]
     proy_total, low, high = proyectar_proximo_pedido(serie_total)
 
@@ -898,7 +870,7 @@ elif vista == "📈 Comparativa locales":
         df_c = df_raw[df_raw['cuenta'] == cuenta]
         total = df_c['cantidad'].sum()
         prods_activos = (df_c.groupby('codigo')['cantidad'].sum() > 0).sum()
-        meses_disp_c = sorted(df_raw['mes_num'].unique())
+        meses_disp_c = [m for m in sorted(df_raw['mes_num'].unique()) if m != MES_NUM_PARCIAL]
         serie = [df_c[df_c['mes_num'] == m]['cantidad'].sum() for m in meses_disp_c]
         proy, _, _ = proyectar_proximo_pedido(serie)
         tend = calcular_tendencia(serie)
@@ -906,14 +878,14 @@ elif vista == "📈 Comparativa locales":
                     .sort_values(ascending=False).index[0] if not df_c.empty else '-')
         resumen.append({
             'Local': cuenta.replace('cuenta ', 'Local '),
-            'Total 2025': total,
+            'Total': total,
             'Productos activos': prods_activos,
             'Próx. pedido (est.)': proy,
             'Tendencia': tend,
             'Producto #1': top_prod[:40]
         })
 
-    df_resumen = pd.DataFrame(resumen).sort_values('Total 2025', ascending=False)
+    df_resumen = pd.DataFrame(resumen).sort_values('Total', ascending=False)
 
     st.markdown('<div class="section-title">Ranking de locales por volumen</div>', unsafe_allow_html=True)
     for _, row in df_resumen.iterrows():
@@ -935,7 +907,7 @@ elif vista == "📈 Comparativa locales":
                     </div>
                 </div>
                 <div style="text-align:right;">
-                    <div style="font-size:1.4rem; font-weight:700; color:#a5b4fc;">{row['Total 2025']:,.0f} BU</div>
+                    <div style="font-size:1.4rem; font-weight:700; color:#a5b4fc;">{row['Total']:,.0f} BU</div>
                     <div style="font-size:0.72rem; color:#6b7280;">
                         {row['Productos activos']} SKUs · próx. pedido ~{row['Próx. pedido (est.)']:,.0f}
                     </div>
@@ -951,7 +923,7 @@ elif vista == "📈 Comparativa locales":
     evol_pivot = df_raw.groupby(['cuenta','mes_num'])['cantidad'].sum().reset_index()
     evol_pivot['cuenta'] = evol_pivot['cuenta'].str.replace('cuenta ', 'L')
     pivot = evol_pivot.pivot(index='mes_num', columns='cuenta', values='cantidad').fillna(0)
-    etiquetas_orden = [etiqueta_mes(i) for i in pivot.index]
+    etiquetas_orden = [etiqueta_mes_marcada(i, MES_NUM_PARCIAL) for i in pivot.index]
     pivot.index = pd.CategoricalIndex(etiquetas_orden, categories=etiquetas_orden, ordered=True)
     st.line_chart(pivot, height=300)
 
@@ -1122,63 +1094,15 @@ elif vista == "🗓️ Análisis trimestral":
     por_trimestre = df_tri.groupby('trimestre_label')['cantidad'].sum()
     por_trimestre = por_trimestre.reindex(orden_trimestres['trimestre_label'])
 
+    # Marcar con "*" el trimestre que está incompleto por el mes en curso
+    if TRIMESTRE_PARCIAL_LABEL and TRIMESTRE_PARCIAL_LABEL in por_trimestre.index:
+        etiquetas_tri = [f"{t}*" if t == TRIMESTRE_PARCIAL_LABEL else t for t in por_trimestre.index]
+        por_trimestre.index = pd.CategoricalIndex(etiquetas_tri, categories=etiquetas_tri, ordered=True)
+
     st.bar_chart(por_trimestre, color="#6366f1", height=260)
 
-    st.markdown("<br>", unsafe_allow_html=True)
-
-    # ── Volumen mensual: para descartar meses puntuales de grandes eventos ──
-    st.markdown('<div class="section-title">Volumen mensual · detectar meses con eventos puntuales</div>', unsafe_allow_html=True)
-    st.caption("Cada mes se compara contra el promedio de los otros 2 meses de su mismo trimestre — así se distingue una compra grande y puntual de una tendencia real del trimestre.")
-
-    orden_meses = (df_tri[['anio', 'mes_num', 'mes', 'trimestre_label']]
-                  .drop_duplicates()
-                  .sort_values('mes_num'))
-    por_mes_total = df_tri.groupby('mes_num')['cantidad'].sum()
-
-    serie_mensual = por_mes_total.reindex(orden_meses['mes_num'])
-    serie_mensual.index = orden_meses.apply(lambda r: f"{r['mes'][:3]} {r['anio']}", axis=1).values
-
-    st.bar_chart(serie_mensual, color="#a78bfa", height=240)
-
-    for _, fila_mes in orden_meses.iterrows():
-        mn = fila_mes['mes_num']
-        tl = fila_mes['trimestre_label']
-        vol_mes = por_mes_total.get(mn, 0.0)
-
-        # Comparar contra el promedio de los otros meses del mismo trimestre
-        meses_mismo_trim = orden_meses[orden_meses['trimestre_label'] == tl]['mes_num'].tolist()
-        otros_meses = [m for m in meses_mismo_trim if m != mn]
-        vols_otros = [por_mes_total.get(m, 0.0) for m in otros_meses]
-        prom_otros = sum(vols_otros) / len(vols_otros) if vols_otros else None
-
-        alerta = ''
-        es_pico = False
-        if prom_otros and prom_otros > 0:
-            desvio_pct = (vol_mes - prom_otros) / prom_otros * 100
-            if desvio_pct >= 50:
-                es_pico = True
-                alerta = f' <span class="tag-amarillo">⚠ {desvio_pct:.0f}% arriba del promedio del trimestre</span>'
-
-        etiqueta = f"{fila_mes['mes']} {fila_mes['anio']}"
-        st.markdown(f"""
-        <div class="producto-row">
-            <span class="producto-nombre">{etiqueta} <span style="color:#6b7280; font-size:0.7rem;">({tl})</span></span>
-            <span class="producto-valor">{vol_mes:,.0f} BU{alerta}</span>
-        </div>""", unsafe_allow_html=True)
-
-        if es_pico:
-            if filtro_local_tri == "Cadena completa":
-                top_contrib = (df_tri[df_tri['mes_num'] == mn]
-                              .groupby('cuenta')['cantidad'].sum()
-                              .sort_values(ascending=False).head(3))
-                detalle_txt = " · ".join(f"{n.replace('cuenta ', 'Local ')} ({v:,.0f} BU)" for n, v in top_contrib.items())
-                st.caption(f"↳ Locales que más aportaron ese mes: {detalle_txt}")
-            else:
-                top_contrib = (df_tri[df_tri['mes_num'] == mn]
-                              .groupby('producto_limpio')['cantidad'].sum()
-                              .sort_values(ascending=False).head(3))
-                detalle_txt = " · ".join(f"{n[:30]} ({v:,.0f} BU)" for n, v in top_contrib.items())
-                st.caption(f"↳ Productos que más aportaron ese mes: {detalle_txt}")
+    if TRIMESTRE_PARCIAL_LABEL and TRIMESTRE_PARCIAL_LABEL in orden_trimestres['trimestre_label'].values:
+        st.caption(f"* {TRIMESTRE_PARCIAL_LABEL} está incompleto: {MES_PARCIAL} viene cortado por la fecha del informe.")
 
     st.markdown("<br>", unsafe_allow_html=True)
 
@@ -1199,6 +1123,23 @@ elif vista == "🗓️ Análisis trimestral":
 
             anio_base = min(por_anio_t.index)
             anio_comp = max(por_anio_t.index)
+
+            # Si el trimestre del año más reciente está cortado por el mes en curso,
+            # se comparan sólo los meses completos que existen en los dos años.
+            # Sin esto, un T3 con 13 días de septiembre aparenta una caída que no existe.
+            nota_equiparada = ""
+            if TRIMESTRE_PARCIAL is not None and t == TRIMESTRE_PARCIAL and anio_comp == ANIO_PARCIAL:
+                meses_completos = [m for m in df_t[df_t['anio'] == anio_comp]['mes'].unique() if m != MES_PARCIAL]
+                meses_comunes = [m for m in meses_completos if m in df_t[df_t['anio'] == anio_base]['mes'].unique()]
+                if not meses_comunes:
+                    continue
+                df_eq = df_t[df_t['mes'].isin(meses_comunes)]
+                por_anio_t = df_eq.groupby('anio')['cantidad'].sum()
+                if len(por_anio_t) < 2:
+                    continue
+                abrev = ", ".join(m[:3] for m in sorted(meses_comunes, key=MESES.index))
+                nota_equiparada = f" · comparando sólo {abrev} (se excluye {MES_PARCIAL}, mes en curso)"
+
             val_base = por_anio_t[anio_base]
             val_comp = por_anio_t[anio_comp]
             var_pct = (val_comp - val_base) / val_base * 100 if val_base else 0
@@ -1213,7 +1154,7 @@ elif vista == "🗓️ Análisis trimestral":
                     <div>
                         <div style="font-size:0.95rem; font-weight:700; color:#f9fafb;">Trimestre {t}</div>
                         <div style="font-size:0.72rem; color:#6b7280; margin-top:0.15rem;">
-                            {anio_base} T{t}: {val_base:,.0f} BU &nbsp;→&nbsp; {anio_comp} T{t}: {val_comp:,.0f} BU
+                            {anio_base} T{t}: {val_base:,.0f} BU &nbsp;→&nbsp; {anio_comp} T{t}: {val_comp:,.0f} BU{nota_equiparada}
                         </div>
                     </div>
                     <div style="text-align:right;">
@@ -1222,7 +1163,7 @@ elif vista == "🗓️ Análisis trimestral":
                 </div>
             </div>""", unsafe_allow_html=True)
     else:
-        st.info("Con un solo año cargado no hay comparativa año contra año todavía. Sumá el archivo de 2026 (o años siguientes) para habilitar esta vista.")
+        st.info("Con un solo año de datos no hay comparativa año contra año todavía. Se habilita cuando el archivo trae dos años o más para esta cartera.")
 
     st.markdown("<br>", unsafe_allow_html=True)
 
@@ -1235,8 +1176,12 @@ elif vista == "🗓️ Análisis trimestral":
     )
 
     df_trim_sel = df_tri[df_tri['trimestre_label'] == trimestre_sel]
+
+    if TRIMESTRE_PARCIAL_LABEL and trimestre_sel == TRIMESTRE_PARCIAL_LABEL:
+        st.caption(f"Ojo: este trimestre está incompleto ({MES_PARCIAL} viene cortado), así que los volúmenes son menores a lo que va a cerrar.")
+
     top_prod_trim = (df_trim_sel.groupby('producto_limpio')['cantidad']
-                     .sum().sort_values(ascending=False).head(25))
+                     .sum().sort_values(ascending=False).head(15))
     total_trim_sel = df_trim_sel['cantidad'].sum()
 
     for prod, val in top_prod_trim.items():
@@ -1246,95 +1191,6 @@ elif vista == "🗓️ Análisis trimestral":
             <span class="producto-nombre">{prod[:45]}</span>
             <span class="producto-valor">{val:,.0f} BU · {pct:.0f}%</span>
         </div>""", unsafe_allow_html=True)
-
-    st.markdown("<br>", unsafe_allow_html=True)
-
-    # ── Evolución de un producto puntual a través de todos los trimestres ──
-    st.markdown('<div class="section-title">Evolución de un producto puntual</div>', unsafe_allow_html=True)
-    st.caption("Elegí un producto y mirá su volumen y su puesto en el ranking en cada trimestre, incluso cuando no entra en el top 25 — así se detectan desvíos puntuales.")
-
-    productos_disponibles = sorted(df_tri['producto_limpio'].unique())
-    producto_foco = st.selectbox(
-        "Producto a analizar",
-        productos_disponibles,
-        key="sel_producto_foco"
-    )
-
-    orden_trim_list = list(orden_trimestres['trimestre_label'])
-    filas_foco = []
-    for tl in orden_trim_list:
-        df_t_all = df_tri[df_tri['trimestre_label'] == tl]
-        ranking_t = df_t_all.groupby('producto_limpio')['cantidad'].sum().sort_values(ascending=False)
-        n_productos_t = len(ranking_t)
-        if producto_foco in ranking_t.index:
-            vol = ranking_t[producto_foco]
-            puesto = ranking_t.index.get_loc(producto_foco) + 1
-        else:
-            vol = 0.0
-            puesto = None
-        filas_foco.append({'trimestre': tl, 'volumen': vol, 'puesto': puesto, 'n_productos': n_productos_t})
-
-    df_foco = pd.DataFrame(filas_foco)
-
-    st.bar_chart(df_foco.set_index('trimestre')['volumen'], color="#818cf8", height=220)
-
-    for i, row_f in df_foco.iterrows():
-        if row_f['puesto'] is None:
-            puesto_txt = "sin ventas este trimestre"
-            color_puesto = "#f87171"
-        elif row_f['puesto'] <= 25:
-            puesto_txt = f"puesto #{row_f['puesto']} de {row_f['n_productos']}"
-            color_puesto = "#34d399"
-        else:
-            puesto_txt = f"puesto #{row_f['puesto']} de {row_f['n_productos']} · fuera del top 25"
-            color_puesto = "#fbbf24"
-
-        # Marcar caída fuerte vs el trimestre inmediatamente anterior (posible desvío puntual)
-        alerta_txt = ''
-        if i > 0:
-            vol_prev = df_foco.iloc[i - 1]['volumen']
-            if vol_prev > 0:
-                var_pct_f = (row_f['volumen'] - vol_prev) / vol_prev * 100
-                if var_pct_f <= -30:
-                    alerta_txt = f' <span class="tag-rojo">⚠ {var_pct_f:.0f}% vs trim. anterior</span>'
-
-        st.markdown(f"""
-        <div class="producto-row">
-            <span class="producto-nombre">{row_f['trimestre']}</span>
-            <span class="producto-valor" style="color:{color_puesto};">{row_f['volumen']:,.0f} BU · {puesto_txt}{alerta_txt}</span>
-        </div>""", unsafe_allow_html=True)
-
-    st.caption("💡 El ⚠ marca una caída de 30% o más contra el trimestre inmediatamente anterior — no explica la causa, es una señal para revisar con tu criterio si hubo algo puntual (quiebre de stock, cambio de precio, estacionalidad, etc.).")
-
-    st.markdown("<br>", unsafe_allow_html=True)
-
-    # ── Desglose mensual: mismo producto elegido, abierto mes a mes dentro del trimestre elegido arriba ──
-    st.markdown(f'<div class="section-title">Desglose mensual · {producto_foco[:40]} en {trimestre_sel}</div>', unsafe_allow_html=True)
-
-    df_prod_mes = df_tri[
-        (df_tri['trimestre_label'] == trimestre_sel) &
-        (df_tri['producto_limpio'] == producto_foco)
-    ]
-
-    if df_prod_mes.empty:
-        st.caption(f"Sin datos de \"{producto_foco}\" en {trimestre_sel}.")
-    else:
-        por_mes_prod = (df_prod_mes.groupby('mes_num')
-                        .agg(mes=('mes', 'first'), cantidad=('cantidad', 'sum'))
-                        .sort_index())
-        codigo_prod = df_prod_mes['codigo'].iloc[0]
-        total_prod_trim = por_mes_prod['cantidad'].sum()
-
-        st.bar_chart(por_mes_prod.set_index('mes')['cantidad'], color="#34d399", height=200)
-
-        for _, row_m in por_mes_prod.iterrows():
-            pct_m = row_m['cantidad'] / total_prod_trim * 100 if total_prod_trim else 0
-            pack_html = badge_pack(codigo_prod, row_m['cantidad'])
-            st.markdown(f"""
-            <div class="producto-row">
-                <span class="producto-nombre">{row_m['mes']}</span>
-                <span class="producto-valor">{row_m['cantidad']:,.2f} BU · {pct_m:.0f}% del trimestre{pack_html}</span>
-            </div>""", unsafe_allow_html=True)
 
     # ── Comparar el mix de productos de este trimestre vs mismo trimestre año anterior ──
     trimestre_num_sel = int(trimestre_sel.split(' T')[1])
@@ -1347,8 +1203,22 @@ elif vista == "🗓️ Análisis trimestral":
         st.markdown("<br>", unsafe_allow_html=True)
         st.markdown(f'<div class="section-title">Qué cambió · T{trimestre_num_sel} {anio_anterior} → T{trimestre_num_sel} {anio_num_sel}</div>', unsafe_allow_html=True)
 
-        actual_por_prod = df_trim_sel.groupby('producto_limpio')['cantidad'].sum()
-        anterior_por_prod = df_trim_anterior.groupby('producto_limpio')['cantidad'].sum()
+        # Mismo criterio que arriba: si el trimestre elegido está cortado por el mes
+        # en curso, se comparan sólo los meses completos presentes en ambos años,
+        # para que ningún producto aparezca "cayendo" por un mes a medio terminar.
+        df_actual_cmp = df_trim_sel
+        df_anterior_cmp = df_trim_anterior
+        if TRIMESTRE_PARCIAL is not None and trimestre_num_sel == TRIMESTRE_PARCIAL and anio_num_sel == ANIO_PARCIAL:
+            meses_completos_sel = [m for m in df_trim_sel['mes'].unique() if m != MES_PARCIAL]
+            meses_comunes_sel = [m for m in meses_completos_sel if m in df_trim_anterior['mes'].unique()]
+            if meses_comunes_sel:
+                df_actual_cmp = df_trim_sel[df_trim_sel['mes'].isin(meses_comunes_sel)]
+                df_anterior_cmp = df_trim_anterior[df_trim_anterior['mes'].isin(meses_comunes_sel)]
+                abrev_sel = ", ".join(m[:3] for m in sorted(meses_comunes_sel, key=MESES.index))
+                st.caption(f"Comparando sólo {abrev_sel}: {MES_PARCIAL} está incompleto y se excluye de los dos años.")
+
+        actual_por_prod = df_actual_cmp.groupby('producto_limpio')['cantidad'].sum()
+        anterior_por_prod = df_anterior_cmp.groupby('producto_limpio')['cantidad'].sum()
 
         comparativa = pd.DataFrame({'actual': actual_por_prod, 'anterior': anterior_por_prod}).fillna(0)
         comparativa['var_abs'] = comparativa['actual'] - comparativa['anterior']
