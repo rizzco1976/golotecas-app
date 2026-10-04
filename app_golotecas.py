@@ -532,7 +532,7 @@ with st.sidebar:
             st.markdown("---")
             st.markdown("##### Navegación")
 
-            opciones_vista = ["📊 Resumen cadena", "🏪 Análisis por local", "🎯 Próximo pedido", "📈 Comparativa locales", "🗂️ Por negocio", "🗓️ Análisis trimestral"]
+            opciones_vista = ["📊 Resumen cadena", "🏪 Análisis por local", "🎯 Próximo pedido", "📈 Comparativa locales", "🗂️ Por negocio", "🗓️ Análisis trimestral", "📆 Radiografía del mes"]
 
             vista = st.radio(
                 "Vista",
@@ -1199,22 +1199,24 @@ elif vista == "🗓️ Análisis trimestral":
 
     df_trim_anterior = df_tri[(df_tri['trimestre'] == trimestre_num_sel) & (df_tri['anio'] == anio_anterior)]
 
-    if not df_trim_anterior.empty:
-        st.markdown("<br>", unsafe_allow_html=True)
-        st.markdown(f'<div class="section-title">Qué cambió · T{trimestre_num_sel} {anio_anterior} → T{trimestre_num_sel} {anio_num_sel}</div>', unsafe_allow_html=True)
+    # El título y el selector se muestran siempre; la comparación sólo si existe el mismo trimestre del año anterior.
+    st.markdown("<br>", unsafe_allow_html=True)
+    st.markdown(f'<div class="section-title">Qué cambió · T{trimestre_num_sel} {anio_anterior} → T{trimestre_num_sel} {anio_num_sel}</div>', unsafe_allow_html=True)
 
-        NIVELES_AGRUPACION = {
-            "Producto": ("producto_limpio", 34, 20),
-            "Línea de negocio": ("negocio", 42, 20),
-            "Categoría": ("categoria", 42, 20),
-        }
-        nivel_sel = st.radio(
-            "Agrupar por",
-            list(NIVELES_AGRUPACION.keys()),
-            horizontal=True,
-            key="nivel_que_cambio"
-        )
-        col_agrupacion, largo_nombre, top_n_cambio = NIVELES_AGRUPACION[nivel_sel]
+    NIVELES_AGRUPACION = {
+        "Producto": ("producto_limpio", 34, 20),
+        "Línea de negocio": ("negocio", 42, 20),
+        "Categoría": ("categoria", 42, 20),
+    }
+    nivel_sel = st.radio(
+        "Agrupar por",
+        list(NIVELES_AGRUPACION.keys()),
+        horizontal=True,
+        key="nivel_que_cambio"
+    )
+    col_agrupacion, largo_nombre, top_n_cambio = NIVELES_AGRUPACION[nivel_sel]
+
+    if not df_trim_anterior.empty:
 
         # Mismo criterio que arriba: si el trimestre elegido está cortado por el mes
         # en curso, se comparan sólo los meses completos presentes en ambos años,
@@ -1267,4 +1269,202 @@ elif vista == "🗓️ Análisis trimestral":
         else:
             st.caption(f"💡 \"{etiqueta_nuevo}\" = esta {nivel_sel.lower()} no tuvo ventas en el trimestre anterior (no es crecimiento orgánico, puede ser estacional — ej. Halloween). \"{etiqueta_disc}\" = no tuvo ventas en el trimestre actual.")
     else:
-        st.caption(f"No hay datos de T{trimestre_num_sel} {anio_anterior} para comparar contra este trimestre.")
+        st.info(f"{trimestre_sel} no tiene un T{trimestre_num_sel} {anio_anterior} contra qué comparar. Elegí arriba un trimestre del año más reciente (por ejemplo uno de 2026) para ver Qué cambió.")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# VISTA: RADIOGRAFÍA DEL MES
+# ══════════════════════════════════════════════════════════════════════════════
+elif vista == "📆 Radiografía del mes":
+    st.markdown(f"# Radiografía del mes · {cartera_sel}")
+    st.caption("Foto de un mes puntual contra el mismo mes del año anterior, el mes previo y el promedio de los 3 meses anteriores. No proyecta nada: son los números base para que armes tu proyección con lo que vos sabés (clima, estacionalidad, disponibilidad de productos).")
+    st.markdown("---")
+
+    meses_disp = sorted(df_raw['mes_num'].unique())
+
+    def nombre_mes(m):
+        marca = " (incompleto)" if MES_NUM_PARCIAL is not None and m == MES_NUM_PARCIAL else ""
+        return f"{MESES[m % 12]} {m // 12}{marca}"
+
+    meses_desc = list(reversed(meses_disp))
+    # Por defecto, el último mes COMPLETO (el en curso todavía está cortado)
+    idx_default = 1 if (MES_NUM_PARCIAL is not None and meses_desc[0] == MES_NUM_PARCIAL and len(meses_desc) > 1) else 0
+
+    col_f1, col_f2, col_f3 = st.columns([1, 1, 1.4])
+    with col_f1:
+        filtro_local_mes = st.selectbox(
+            "Local",
+            ["Cadena completa"] + CUENTAS,
+            format_func=lambda x: x if x == "Cadena completa" else x.replace('cuenta ', 'Local '),
+            key="sel_local_radiografia"
+        )
+    with col_f2:
+        mes_num_sel = st.selectbox("Mes", meses_desc, index=idx_default, format_func=nombre_mes, key="sel_mes_radiografia")
+    with col_f3:
+        NIVELES_RADIO = {"Producto": "producto_limpio", "Línea de negocio": "negocio", "Categoría": "categoria"}
+        nivel_radio = st.radio("Agrupar por", list(NIVELES_RADIO.keys()), horizontal=True, key="nivel_radiografia")
+    col_nivel = NIVELES_RADIO[nivel_radio]
+
+    df_loc_mes = df_raw if filtro_local_mes == "Cadena completa" else df_raw[df_raw['cuenta'] == filtro_local_mes]
+
+    if MES_NUM_PARCIAL is not None and mes_num_sel == MES_NUM_PARCIAL:
+        st.warning(f"{nombre_mes(mes_num_sel)}: el informe llega cortado, así que los números de este mes son menores a lo que va a cerrar. No lo compares directo contra meses completos.")
+
+    mes_ano_ant = mes_num_sel - 12
+    mes_ant = mes_num_sel - 1
+    meses_prev3 = [m for m in (mes_num_sel - 1, mes_num_sel - 2, mes_num_sel - 3) if m in meses_disp]
+
+    def total_mes(m):
+        return df_loc_mes.loc[df_loc_mes['mes_num'] == m, 'cantidad'].sum()
+
+    tot_sel = total_mes(mes_num_sel)
+    tot_ano_ant = total_mes(mes_ano_ant) if mes_ano_ant in meses_disp else None
+    tot_ant = total_mes(mes_ant) if mes_ant in meses_disp else None
+    tot_prom3 = (sum(total_mes(m) for m in meses_prev3) / len(meses_prev3)) if meses_prev3 else None
+
+    def delta_html(actual, ref, texto):
+        if ref is None:
+            return f'<div class="metric-delta delta-neu">{texto}: sin dato</div>'
+        if ref == 0:
+            return f'<div class="metric-delta delta-neu">{texto}: 0 BU</div>'
+        pct = (actual - ref) / ref * 100
+        clase = "delta-pos" if pct >= 0 else "delta-neg"
+        signo = "+" if pct >= 0 else ""
+        return f'<div class="metric-delta {clase}">{signo}{pct:.0f}% vs {texto} ({ref:,.0f} BU)</div>'
+
+    k1, k2, k3, k4 = st.columns(4)
+    with k1:
+        st.markdown(f"""
+        <div class="metric-card">
+            <div class="metric-label">Vendido en el mes</div>
+            <div class="metric-value">{tot_sel:,.0f}</div>
+            <div class="metric-delta delta-neu">BU · {nombre_mes(mes_num_sel)}</div>
+        </div>""", unsafe_allow_html=True)
+    with k2:
+        st.markdown(f"""
+        <div class="metric-card">
+            <div class="metric-label">Mismo mes año anterior</div>
+            <div class="metric-value">{'-' if tot_ano_ant is None else f'{tot_ano_ant:,.0f}'}</div>
+            {delta_html(tot_sel, tot_ano_ant, f'{MESES[mes_num_sel % 12][:3]} {mes_ano_ant // 12}')}
+        </div>""", unsafe_allow_html=True)
+    with k3:
+        st.markdown(f"""
+        <div class="metric-card">
+            <div class="metric-label">Mes anterior</div>
+            <div class="metric-value">{'-' if tot_ant is None else f'{tot_ant:,.0f}'}</div>
+            {delta_html(tot_sel, tot_ant, 'mes ant.')}
+        </div>""", unsafe_allow_html=True)
+    with k4:
+        n_prom = len(meses_prev3)
+        st.markdown(f"""
+        <div class="metric-card">
+            <div class="metric-label">Promedio {n_prom} meses previos</div>
+            <div class="metric-value">{'-' if tot_prom3 is None else f'{tot_prom3:,.0f}'}</div>
+            {delta_html(tot_sel, tot_prom3, 'promedio')}
+        </div>""", unsafe_allow_html=True)
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # ── Evolución mensual completa (para ver estacionalidad de un vistazo) ──
+    st.markdown('<div class="section-title">Evolución mensual · todos los meses cargados</div>', unsafe_allow_html=True)
+    evol_mes = df_loc_mes.groupby('mes_num')['cantidad'].sum().reindex(meses_disp, fill_value=0).reset_index()
+    evol_mes['mes'] = evol_mes['mes_num'].apply(lambda m: etiqueta_mes_marcada(m, MES_NUM_PARCIAL))
+    st.bar_chart(evol_mes.set_index('mes')['cantidad'], color="#6366f1", height=220)
+
+    # ── Tabla de detalle del mes ──
+    def armar_tabla(df_base, col):
+        def serie(m):
+            return df_base[df_base['mes_num'] == m].groupby(col)['cantidad'].sum()
+        t = pd.DataFrame({
+            'Este mes': serie(mes_num_sel),
+            'Mismo mes año ant.': serie(mes_ano_ant) if mes_ano_ant in meses_disp else pd.Series(dtype=float),
+            'Mes anterior': serie(mes_ant) if mes_ant in meses_disp else pd.Series(dtype=float),
+        })
+        if meses_prev3:
+            prev = pd.concat([serie(m) for m in meses_prev3], axis=1).fillna(0)
+            t['Prom. meses previos'] = prev.sum(axis=1) / len(meses_prev3)
+        else:
+            t['Prom. meses previos'] = np.nan
+        t = t.fillna(0)
+        suma_mes = t['Este mes'].sum()
+        t['% del mes'] = t['Este mes'] / suma_mes * 100 if suma_mes else 0.0
+        t['Var. vs año ant. %'] = np.where(t['Mismo mes año ant.'] > 0, (t['Este mes'] - t['Mismo mes año ant.']) / t['Mismo mes año ant.'] * 100, np.nan)
+        t['Var. vs mes ant. %'] = np.where(t['Mes anterior'] > 0, (t['Este mes'] - t['Mes anterior']) / t['Mes anterior'] * 100, np.nan)
+        t = t[(t[['Este mes', 'Mismo mes año ant.', 'Mes anterior', 'Prom. meses previos']] > 0).any(axis=1)]
+        return t.sort_values(['Este mes', 'Mismo mes año ant.'], ascending=False)
+
+    CFG_TABLA = {
+        'Este mes': st.column_config.NumberColumn('Este mes (BU)', format="%.1f"),
+        'Mismo mes año ant.': st.column_config.NumberColumn('Mismo mes año ant.', format="%.1f"),
+        'Mes anterior': st.column_config.NumberColumn('Mes anterior', format="%.1f"),
+        'Prom. meses previos': st.column_config.NumberColumn('Prom. meses previos', format="%.1f"),
+        '% del mes': st.column_config.NumberColumn('% del mes', format="%.1f%%"),
+        'Var. vs año ant. %': st.column_config.NumberColumn('Var. vs año ant.', format="%+.0f%%"),
+        'Var. vs mes ant. %': st.column_config.NumberColumn('Var. vs mes ant.', format="%+.0f%%"),
+    }
+
+    st.markdown("<br>", unsafe_allow_html=True)
+    st.markdown(f'<div class="section-title">Detalle por {nivel_radio.lower()} · {nombre_mes(mes_num_sel)}</div>', unsafe_allow_html=True)
+
+    tabla_mes = armar_tabla(df_loc_mes, col_nivel)
+
+    vista_filas = st.radio(
+        "Mostrar",
+        ["Todos", "Vendieron este mes", "Sin venta este mes (pero sí antes)"],
+        horizontal=True,
+        key="filtro_filas_radiografia"
+    )
+    if vista_filas == "Vendieron este mes":
+        tabla_mostrar = tabla_mes[tabla_mes['Este mes'] > 0]
+    elif vista_filas == "Sin venta este mes (pero sí antes)":
+        tabla_mostrar = tabla_mes[tabla_mes['Este mes'] == 0]
+    else:
+        tabla_mostrar = tabla_mes
+
+    st.caption(f"{len(tabla_mostrar)} filas · ordenado por lo vendido este mes. Podés reordenar tocando el encabezado de cualquier columna. \"Sin venta este mes\" ayuda a detectar faltantes o productos que se dejaron de pedir.")
+    tabla_vista = tabla_mostrar.reset_index().rename(columns={col_nivel: nivel_radio})
+    st.dataframe(
+        tabla_vista,
+        column_config=CFG_TABLA,
+        hide_index=True,
+        width='stretch',
+        height=min(640, 38 + 35 * max(len(tabla_vista), 3))
+    )
+
+    # ── Desglose por local (sólo si estamos viendo la cadena completa) ──
+    if filtro_local_mes == "Cadena completa":
+        st.markdown("<br>", unsafe_allow_html=True)
+        st.markdown(f'<div class="section-title">Detalle por local · {nombre_mes(mes_num_sel)}</div>', unsafe_allow_html=True)
+        tabla_locales = armar_tabla(df_loc_mes, 'cuenta')
+        tabla_locales_vista = tabla_locales.reset_index().rename(columns={'cuenta': 'Local'})
+        tabla_locales_vista['Local'] = tabla_locales_vista['Local'].str.replace('cuenta ', 'Local ')
+        st.dataframe(
+            tabla_locales_vista,
+            column_config=CFG_TABLA,
+            hide_index=True,
+            width='stretch',
+            height=min(420, 38 + 35 * max(len(tabla_locales_vista), 3))
+        )
+
+    # ── Historial de un ítem: ver cómo se comportó mes a mes para armar la proyección ──
+    st.markdown("<br>", unsafe_allow_html=True)
+    st.markdown(f'<div class="section-title">Historial mes a mes · un {nivel_radio.lower()} puntual</div>', unsafe_allow_html=True)
+    st.caption("Elegí un ítem para ver su venta en todos los meses cargados y detectar estacionalidad, quiebres o picos puntuales.")
+
+    items_disp = list(tabla_mes.index)
+    if items_disp:
+        item_sel = st.selectbox(nivel_radio, items_disp, key="item_historial_radiografia")
+        serie_item = (df_loc_mes[df_loc_mes[col_nivel] == item_sel]
+                      .groupby('mes_num')['cantidad'].sum()
+                      .reindex(meses_disp, fill_value=0))
+        hist = pd.DataFrame({'mes_num': serie_item.index, 'cantidad': serie_item.values})
+        hist['mes'] = hist['mes_num'].apply(lambda m: etiqueta_mes_marcada(m, MES_NUM_PARCIAL))
+        st.bar_chart(hist.set_index('mes')['cantidad'], color="#34d399", height=220)
+
+        hist_tabla = pd.DataFrame({
+            'Mes': [nombre_mes(m) for m in hist['mes_num']],
+            'BU': hist['cantidad'].round(2),
+        })
+        st.dataframe(hist_tabla.iloc[::-1], hide_index=True, width='stretch', height=min(420, 38 + 35 * max(len(hist_tabla), 3)))
+    else:
+        st.info("No hay datos para este filtro.")
