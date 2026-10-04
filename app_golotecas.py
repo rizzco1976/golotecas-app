@@ -1203,6 +1203,19 @@ elif vista == "🗓️ Análisis trimestral":
         st.markdown("<br>", unsafe_allow_html=True)
         st.markdown(f'<div class="section-title">Qué cambió · T{trimestre_num_sel} {anio_anterior} → T{trimestre_num_sel} {anio_num_sel}</div>', unsafe_allow_html=True)
 
+        NIVELES_AGRUPACION = {
+            "Producto": ("producto_limpio", 34, 10),
+            "Línea de negocio": ("negocio", 42, 10),
+            "Categoría": ("categoria", 42, 15),
+        }
+        nivel_sel = st.radio(
+            "Agrupar por",
+            list(NIVELES_AGRUPACION.keys()),
+            horizontal=True,
+            key="nivel_que_cambio"
+        )
+        col_agrupacion, largo_nombre, top_n_cambio = NIVELES_AGRUPACION[nivel_sel]
+
         # Mismo criterio que arriba: si el trimestre elegido está cortado por el mes
         # en curso, se comparan sólo los meses completos presentes en ambos años,
         # para que ningún producto aparezca "cayendo" por un mes a medio terminar.
@@ -1217,34 +1230,41 @@ elif vista == "🗓️ Análisis trimestral":
                 abrev_sel = ", ".join(m[:3] for m in sorted(meses_comunes_sel, key=MESES.index))
                 st.caption(f"Comparando sólo {abrev_sel}: {MES_PARCIAL} está incompleto y se excluye de los dos años.")
 
-        actual_por_prod = df_actual_cmp.groupby('producto_limpio')['cantidad'].sum()
-        anterior_por_prod = df_anterior_cmp.groupby('producto_limpio')['cantidad'].sum()
+        actual_por_prod = df_actual_cmp.groupby(col_agrupacion)['cantidad'].sum()
+        anterior_por_prod = df_anterior_cmp.groupby(col_agrupacion)['cantidad'].sum()
 
         comparativa = pd.DataFrame({'actual': actual_por_prod, 'anterior': anterior_por_prod}).fillna(0)
         comparativa['var_abs'] = comparativa['actual'] - comparativa['anterior']
         comparativa = comparativa.sort_values('var_abs', ascending=False)
 
+        etiqueta_nuevo = "nueva" if nivel_sel != "Producto" else "nuevo"
+        etiqueta_disc = "sin ventas este trim." if nivel_sel != "Producto" else "discontinuado"
+
         col_sube_t, col_baja_t = st.columns(2)
         with col_sube_t:
             st.markdown('<div style="font-size:0.72rem; font-weight:700; letter-spacing:0.08em; color:#34d399; text-transform:uppercase; margin-bottom:0.6rem;">↑ Crecieron más</div>', unsafe_allow_html=True)
-            for prod, row_c in comparativa[comparativa['var_abs'] > 0].head(10).iterrows():
+            for prod, row_c in comparativa[comparativa['var_abs'] > 0].head(top_n_cambio).iterrows():
                 es_nuevo = row_c['anterior'] == 0
-                tag_nuevo = ' <span class="tag-amarillo">nuevo</span>' if es_nuevo else ''
+                tag_nuevo = f' <span class="tag-amarillo">{etiqueta_nuevo}</span>' if es_nuevo else ''
                 st.markdown(f"""
                 <div class="producto-row" style="border-left-color:#34d399;">
-                    <span class="producto-nombre">{prod[:34]}{tag_nuevo}</span>
+                    <span class="producto-nombre">{prod[:largo_nombre]}{tag_nuevo}</span>
                     <span class="producto-valor" style="color:#34d399;">+{row_c['var_abs']:.0f} BU</span>
                 </div>""", unsafe_allow_html=True)
         with col_baja_t:
             st.markdown('<div style="font-size:0.72rem; font-weight:700; letter-spacing:0.08em; color:#f87171; text-transform:uppercase; margin-bottom:0.6rem;">↓ Bajaron más</div>', unsafe_allow_html=True)
-            for prod, row_c in comparativa[comparativa['var_abs'] < 0].sort_values('var_abs').head(10).iterrows():
+            for prod, row_c in comparativa[comparativa['var_abs'] < 0].sort_values('var_abs').head(top_n_cambio).iterrows():
                 es_discontinuado = row_c['actual'] == 0
-                tag_disc = ' <span class="tag-rojo">discontinuado</span>' if es_discontinuado else ''
+                tag_disc = f' <span class="tag-rojo">{etiqueta_disc}</span>' if es_discontinuado else ''
                 st.markdown(f"""
                 <div class="producto-row" style="border-left-color:#f87171;">
-                    <span class="producto-nombre">{prod[:34]}{tag_disc}</span>
+                    <span class="producto-nombre">{prod[:largo_nombre]}{tag_disc}</span>
                     <span class="producto-valor" style="color:#f87171;">{row_c['var_abs']:.0f} BU</span>
                 </div>""", unsafe_allow_html=True)
-        st.caption("💡 \"nuevo\" = no existía en el trimestre anterior (no es crecimiento orgánico). \"discontinuado\" = no tuvo ventas en el trimestre actual.")
+
+        if nivel_sel == "Producto":
+            st.caption("💡 \"nuevo\" = no existía en el trimestre anterior (no es crecimiento orgánico). \"discontinuado\" = no tuvo ventas en el trimestre actual.")
+        else:
+            st.caption(f"💡 \"{etiqueta_nuevo}\" = esta {nivel_sel.lower()} no tuvo ventas en el trimestre anterior (no es crecimiento orgánico, puede ser estacional — ej. Halloween). \"{etiqueta_disc}\" = no tuvo ventas en el trimestre actual.")
     else:
         st.caption(f"No hay datos de T{trimestre_num_sel} {anio_anterior} para comparar contra este trimestre.")
