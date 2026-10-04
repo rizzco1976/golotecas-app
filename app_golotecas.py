@@ -1204,9 +1204,9 @@ elif vista == "🗓️ Análisis trimestral":
         st.markdown(f'<div class="section-title">Qué cambió · T{trimestre_num_sel} {anio_anterior} → T{trimestre_num_sel} {anio_num_sel}</div>', unsafe_allow_html=True)
 
         NIVELES_AGRUPACION = {
-            "Producto": ("producto_limpio", 34, 10),
-            "Línea de negocio": ("negocio", 42, 10),
-            "Categoría": ("categoria", 42, 15),
+            "Producto": ("producto_limpio", 34, 20),
+            "Línea de negocio": ("negocio", 42, 20),
+            "Categoría": ("categoria", 42, 20),
         }
         nivel_sel = st.radio(
             "Agrupar por",
