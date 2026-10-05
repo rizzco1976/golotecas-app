@@ -14,6 +14,24 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+# Evita que el navegador (Chrome/Edge) traduzca la página: la traducción automática
+# reescribe el DOM y rompe a React con "NotFoundError: removeChild" al cambiar de vista.
+import streamlit.components.v1 as _components
+_components.html("""
+<script>
+try {
+  const d = window.parent.document;
+  d.documentElement.setAttribute('lang', 'es');
+  d.documentElement.setAttribute('translate', 'no');
+  d.documentElement.classList.add('notranslate');
+  if (!d.querySelector('meta[name="google"][content="notranslate"]')) {
+    const m = d.createElement('meta'); m.name = 'google'; m.content = 'notranslate';
+    d.head.appendChild(m);
+  }
+} catch (e) {}
+</script>
+""", height=0)
+
 # ── Estilos ────────────────────────────────────────────────────────────────────
 st.markdown("""
 <style>
@@ -1391,7 +1409,10 @@ elif vista == "📆 Radiografía del mes":
         t['Var. vs año ant. %'] = np.where(t['Mismo mes año ant.'] > 0, (t['Este mes'] - t['Mismo mes año ant.']) / t['Mismo mes año ant.'] * 100, np.nan)
         t['Var. vs mes ant. %'] = np.where(t['Mes anterior'] > 0, (t['Este mes'] - t['Mes anterior']) / t['Mes anterior'] * 100, np.nan)
         t = t[(t[['Este mes', 'Mismo mes año ant.', 'Mes anterior', 'Prom. meses previos']] > 0).any(axis=1)]
-        return t.sort_values(['Este mes', 'Mismo mes año ant.'], ascending=False)
+        t = t.sort_values(['Este mes', 'Mismo mes año ant.'], ascending=False)
+        # Si alguna serie vino vacía (mes sin año anterior, etc.) el índice pierde su nombre: se lo fijamos.
+        t.index.name = col
+        return t
 
     CFG_TABLA = {
         'Este mes': st.column_config.NumberColumn('Este mes (BU)', format="%.1f"),
@@ -1453,7 +1474,7 @@ elif vista == "📆 Radiografía del mes":
 
     items_disp = list(tabla_mes.index)
     if items_disp:
-        item_sel = st.selectbox(nivel_radio, items_disp, key="item_historial_radiografia")
+        item_sel = st.selectbox(nivel_radio, items_disp, key=f"item_historial_radiografia_{col_nivel}")
         serie_item = (df_loc_mes[df_loc_mes[col_nivel] == item_sel]
                       .groupby('mes_num')['cantidad'].sum()
                       .reindex(meses_disp, fill_value=0))
