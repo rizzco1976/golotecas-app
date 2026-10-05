@@ -1387,6 +1387,8 @@ elif vista == "📆 Radiografía del mes":
     st.markdown('<div class="section-title">Evolución mensual · todos los meses cargados</div>', unsafe_allow_html=True)
     evol_mes = df_loc_mes.groupby('mes_num')['cantidad'].sum().reindex(meses_disp, fill_value=0).reset_index()
     evol_mes['mes'] = evol_mes['mes_num'].apply(lambda m: etiqueta_mes_marcada(m, MES_NUM_PARCIAL))
+    # Orden cronológico forzado (Altair ordena el texto alfabéticamente por defecto)
+    evol_mes['mes'] = pd.Categorical(evol_mes['mes'], categories=evol_mes['mes'].tolist(), ordered=True)
     st.bar_chart(evol_mes.set_index('mes')['cantidad'], color="#6366f1", height=220)
 
     # ── Tabla de detalle del mes ──
@@ -1480,12 +1482,13 @@ elif vista == "📆 Radiografía del mes":
                       .reindex(meses_disp, fill_value=0))
         hist = pd.DataFrame({'mes_num': serie_item.index, 'cantidad': serie_item.values})
         hist['mes'] = hist['mes_num'].apply(lambda m: etiqueta_mes_marcada(m, MES_NUM_PARCIAL))
+        hist['mes'] = pd.Categorical(hist['mes'], categories=hist['mes'].tolist(), ordered=True)
         st.bar_chart(hist.set_index('mes')['cantidad'], color="#34d399", height=220)
 
         hist_tabla = pd.DataFrame({
             'Mes': [nombre_mes(m) for m in hist['mes_num']],
             'BU': hist['cantidad'].round(2),
         })
-        st.dataframe(hist_tabla.iloc[::-1], hide_index=True, width='stretch', height=min(420, 38 + 35 * max(len(hist_tabla), 3)))
+        st.dataframe(hist_tabla, hide_index=True, width='stretch', height=min(420, 38 + 35 * max(len(hist_tabla), 3)))
     else:
         st.info("No hay datos para este filtro.")
